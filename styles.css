@@ -304,6 +304,100 @@ body {
   border-top: 1px solid var(--border-color);
 }
 
+/* Images Container */
+.images-container {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.images-container h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.image-item {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.image-item:hover {
+  transform: scale(1.02);
+}
+
+.image-item img {
+  width: 100%;
+  height: 80px;
+  object-fit: cover;
+  display: block;
+}
+
+.image-item .image-caption {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  color: white;
+  font-size: 10px;
+  padding: 20px 6px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.image-preview-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 20px;
+}
+
+.image-preview-modal img {
+  max-width: 100%;
+  max-height: 90vh;
+  border-radius: 8px;
+}
+
+.image-preview-modal .close-btn {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  background: rgba(255,255,255,0.1);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-preview-modal .close-btn:hover {
+  background: rgba(255,255,255,0.2);
+}
+
 .meta-item {
   font-size: 12px;
   color: var(--text-tertiary);
@@ -464,6 +558,80 @@ body {
   background: var(--bg-tertiary);
 }
 
+.history-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+/* History Side Panel */
+.history-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 999;
+}
+
+.history-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 340px;
+  height: 100vh;
+  background: var(--bg-primary);
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.history-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.history-panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.history-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.history-item:hover {
+  background: var(--bg-tertiary);
+}
+
 .history-item-title {
   font-size: 13px;
   font-weight: 500;
@@ -481,9 +649,63 @@ body {
   color: var(--text-tertiary);
 }
 
-.history-empty {
-  padding: 40px 20px;
-  text-align: center;
-  color: var(--text-tertiary);
-  font-size: 13px;
+/* Mermaid Diagram Rendering */
+.markdown-content pre.mermaid-rendered {
+  background: var(--bg-secondary);
+  padding: 16px;
+  border-radius: var(--radius);
+  margin: 16px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow-x: auto;
 }
+
+.markdown-content pre.mermaid-rendered svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-content pre.mermaid-block {
+  position: relative;
+  padding: 12px 12px 12px 44px;
+}
+
+.mermaid-block-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.markdown-content pre.mermaid-block:hover .mermaid-block-actions {
+  opacity: 1;
+}
+
+.mermaid-action-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.mermaid-action-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.mermaid-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+

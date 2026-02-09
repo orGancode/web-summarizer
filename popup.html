@@ -58,6 +58,7 @@
         <button class="tab-btn" data-tab="chinese">中文</button>
       </div>
       <div id="markdownContent" class="markdown-content"></div>
+      <div id="imagesContainer" class="images-container hidden"></div>
       <div class="result-meta">
         <span id="tokenCount" class="meta-item"></span>
         <span id="timeCost" class="meta-item"></span>
@@ -76,19 +77,18 @@
       <button id="retryBtn" class="retry-btn">重试</button>
     </div>
 
-    <div id="historyModal" class="modal hidden">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>总结历史</h3>
-          <button id="closeHistoryBtn" class="close-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <div id="historyList" class="history-list"></div>
+    <div id="historyMask" class="history-mask hidden"></div>
+    <div id="historyPanel" class="history-panel hidden">
+      <div class="history-panel-header">
+        <h3>总结历史</h3>
+        <button id="closeHistoryBtn" class="close-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
       </div>
+      <div id="historyList" class="history-list"></div>
     </div>
   </div>
 

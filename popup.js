@@ -48,7 +48,8 @@ async function saveSummaryToStorage(data) {
       title: data.title,
       original: data.original,
       chinese: data.chinese,
-      detectedLanguage: data.detectedLanguage
+      detectedLanguage: data.detectedLanguage,
+      images: data.images || []
     }
   });
 }
@@ -171,6 +172,13 @@ function displaySummary(summary) {
   } else {
     tabBar.style.display = 'none';
     renderMarkdown(summary.original);
+  }
+
+  // 显示缓存的图片
+  if (summary.images && summary.images.length > 0) {
+    renderImages(summary.images);
+  } else {
+    document.getElementById('imagesContainer').classList.add('hidden');
   }
 
   if (summary.chinese) {
@@ -296,6 +304,11 @@ async function continueSummarization(pageData) {
 
     renderMarkdown(result.content);
 
+    // 显示图片
+    if (pageData.images && pageData.images.length > 0) {
+      renderImages(pageData.images.slice(0, 6));
+    }
+
     if (result.usage) {
       document.getElementById('tokenCount').textContent = `Token: ${result.usage.total_tokens}`;
     }
@@ -305,15 +318,16 @@ async function continueSummarization(pageData) {
 
     statusText.textContent = '总结完成';
 
-    // 清除进度并保存总结
-    await clearProgressState();
-    await saveSummaryToStorage({
-      url: pageData.url,
-      title: pageData.title,
-      original: result.content,
-      chinese: null,
-      detectedLanguage: detectedLang
-    });
+      // 清除进度并保存总结
+      await clearProgressState();
+      await saveSummaryToStorage({
+        url: pageData.url,
+        title: pageData.title,
+        original: result.content,
+        chinese: null,
+        detectedLanguage: detectedLang,
+        images: pageData.images || []
+      });
 
   } catch (err) {
     await clearProgressState();
@@ -336,12 +350,14 @@ async function continueSummarization(pageData) {
   }
 }
 
-// ===== History Modal =====
+// ===== History Panel =====
 async function showHistory() {
-  const modal = document.getElementById('historyModal');
+  const panel = document.getElementById('historyPanel');
+  const mask = document.getElementById('historyMask');
   const historyList = document.getElementById('historyList');
 
-  modal.classList.remove('hidden');
+  mask.classList.remove('hidden');
+  panel.classList.remove('hidden');
   historyList.innerHTML = '<div class="history-empty">加载中...</div>';
 
   const summaries = await loadAllSummaries();
@@ -380,14 +396,16 @@ async function showHistory() {
       const summary = summaries.find(s => s.key === key);
       if (summary) {
         displaySummary(summary);
-        modal.classList.add('hidden');
+        document.getElementById('historyPanel').classList.add('hidden');
+        document.getElementById('historyMask').classList.add('hidden');
       }
     });
   });
 }
 
 function hideHistory() {
-  document.getElementById('historyModal').classList.add('hidden');
+  document.getElementById('historyPanel').classList.add('hidden');
+  document.getElementById('historyMask').classList.add('hidden');
 }
 
 function escapeHtml(text) {
@@ -460,7 +478,7 @@ function detectLanguage(content) {
   return 'en';
 }
 
-async function summarize(content, title, url, language) {
+async function summarize(content, title, url, language, images = []) {
   const { provider, apiKeys, models } = CONFIG;
   const apiKey = apiKeys[provider];
 
@@ -471,6 +489,20 @@ async function summarize(content, title, url, language) {
   const isChinese = language === 'zh';
   const nativeLang = LANGUAGE_NAMES[language] || '原文语言';
   const wordLimit = isChinese ? '50 字' : '20 words';
+
+  // 图片信息添加到prompt
+  const imagesSection = images.length > 0 ? `
+【Images Found on Page】
+The page contains ${Math.min(images.length, 5)} relevant images:
+${images.map((img, i) => `
+${i + 1}. ${img.alt || 'No description'}
+   - Context: ${img.context || 'None'}
+   - Size: ${img.width}x${img.height}px
+`).join('')}
+
+When analyzing, consider what visual information these images convey.
+` : '';
+
   const prompt = `You are a professional content analyst. Analyze and summarize the following web content in ${nativeLang}.
 
 【Task】
@@ -479,40 +511,57 @@ Analyze and summarize the web content below to help readers quickly grasp the co
 【Web Info】
 Title: ${title}
 URL: ${url}
+${imagesSection}
 
 【Content】
 """
 ${content}
 """
 
-【Output Format】
-Use the following Markdown format:
+【Output Requirements】
+1. Provide a comprehensive summary in the specified format below.
+2. **IMPORTANT**: If the content describes a process, workflow, decision tree, or any sequential steps, you MUST include a Mermaid diagram to visualize it.
+3. When a Mermaid diagram is needed, output it using this format:
+\`\`\`mermaid
+[your mermaid code here]
+\`\`\`
 
-## 📌 One-sentence Summary
+【Summary Format】
+
+## One-sentence Summary
 In 1 sentence (no more than ${wordLimit}), summarize the core value of the article.
 
-## 🎯 Key viewpoints
+## Key viewpoints
 In 2-3 sentences, explain the main arguments or findings.
 
-## 🔑 Key Points
+## Key Points
 Extract 3-5 most important points, each in 1 sentence:
 - Point 1
 - Point 2
 - Point 3
 
-## 💡 Practical Suggestions
+## Practical Suggestions
 List 1-2 actionable suggestions if applicable. Skip if not applicable.
 
-## 🤔 Extended Thinking
-Pose 1 thought-provoking question.
+## Extended Thinking
+  Pose 1 thought-provoking question.
+
+## Process Diagram (Optional)
+If the content contains a process, workflow, or decision steps, include a Mermaid diagram here:
+\`\`\`mermaid
+graph TD
+    A[Start] --> B[Step 1]
+    B --> C{Decision}
+    C -->|Option 1| D[Step 2]
+    C -->|Option 2| E[Step 3]
+\`\`\`
 
 【Style Guide】
 - Output in ${nativeLang}
 - Keep language concise and powerful
 - Use vivid metaphors or analogies
 - Stay objective and neutral
-- Use emojis appropriately
-- If content is an error page, ad, or meaningless, reply: "⚠️ This page is not suitable for summarization"
+- If content is an error page, ad, or meaningless, reply: "This page is not suitable for summarization"
 
 Now analyze and output the summary in ${nativeLang}:`;
 
@@ -604,7 +653,98 @@ ${summaryContent}`;
 function renderMarkdown(content) {
   const html = marked.parse(content);
   document.getElementById('markdownContent').innerHTML = html;
+  enhanceMermaidBlocks();
 }
+
+function enhanceMermaidBlocks() {
+  const preBlocks = document.querySelectorAll('.markdown-content pre');
+  preBlocks.forEach(pre => {
+    const code = pre.querySelector('code');
+    if (!code) return;
+    const codeContent = code.textContent.trim();
+    if (!codeContent.startsWith('graph') && !codeContent.startsWith('sequenceDiagram') &&
+        !codeContent.startsWith('classDiagram') && !codeContent.startsWith('stateDiagram') &&
+        !codeContent.startsWith('erDiagram') && !codeContent.startsWith('pie')) return;
+    if (pre.classList.contains('mermaid-enhanced')) return;
+    pre.classList.add('mermaid-block', 'mermaid-enhanced');
+    const encoded = encodeURIComponent(codeContent);
+    pre.insertAdjacentHTML('beforeend', `
+      <div class="mermaid-block-actions">
+        <button class="mermaid-action-btn copy-mermaid-btn" title="复制代码">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+        <a class="mermaid-action-btn" href="https://mermaid.live/edit?code=${encoded}" target="_blank" title="在 Mermaid Live 中打开">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            <polyline points="15 3 21 3 21 9"/>
+            <line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+        </a>
+      </div>
+    `);
+    pre.querySelector('.copy-mermaid-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText(codeContent);
+      const btn = pre.querySelector('.copy-mermaid-btn');
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 2000);
+    });
+  });
+}
+
+function renderImages(images) {
+  const container = document.getElementById('imagesContainer');
+
+  if (!images || images.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+
+  container.innerHTML = `
+    <h4>相关图片 (${images.length})</h4>
+    <div class="images-grid">
+      ${images.map((img, i) => `
+        <div class="image-item" data-index="${i}">
+          <img src="${escapeHtml(img.src)}" alt="${escapeHtml(img.alt || '')}" loading="lazy" onerror="this.style.display='none'">
+          ${img.context ? `<div class="image-caption">${escapeHtml(img.context.slice(0, 30))}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  container.classList.remove('hidden');
+
+  // 添加点击预览功能
+  container.querySelectorAll('.image-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const index = parseInt(item.dataset.index);
+      const image = images[index];
+      showImagePreview(image.src, image.alt || image.context || '');
+    });
+  });
+}
+
+function showImagePreview(src, caption) {
+  const modal = document.createElement('div');
+  modal.className = 'image-preview-modal';
+  modal.innerHTML = `
+    <button class="close-btn">&times;</button>
+    <img src="${escapeHtml(src)}" alt="${escapeHtml(caption)}">
+    ${caption ? `<div style="position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:white;font-size:14px;background:rgba(0,0,0,0.5);padding:8px 16px;border-radius:20px;">${escapeHtml(caption)}</div>` : ''}
+  `;
+
+  modal.querySelector('.close-btn').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.remove();
+  });
+
+  document.body.appendChild(modal);
+}
+
 
 async function switchToChinese() {
   if (isTranslating || bilingualSummary.chinese) return;
@@ -645,7 +785,8 @@ async function switchToChinese() {
       title: (originalData.title) || '',
       original: originalData.content,
       chinese: bilingualSummary.chinese,
-      detectedLanguage: bilingualSummary.detectedLanguage
+      detectedLanguage: bilingualSummary.detectedLanguage,
+      images: (originalData.images) || []
     });
 
     statusText.textContent = '翻译完成';
@@ -726,7 +867,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.textContent = '正在生成总结...';
 
       const detectedLang = detectLanguage(pageData.content);
-      const result = await summarize(pageData.content, pageData.title, pageData.url, detectedLang);
+      const result = await summarize(
+        pageData.content,
+        pageData.title,
+        pageData.url,
+        detectedLang,
+        pageData.images || []
+      );
 
       bilingualSummary = {
         original: result,
@@ -835,9 +982,5 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('closeHistoryBtn').addEventListener('click', hideHistory);
 
-  document.getElementById('historyModal').addEventListener('click', (e) => {
-    if (e.target.id === 'historyModal') {
-      hideHistory();
-    }
-  });
+  document.getElementById('historyMask').addEventListener('click', hideHistory);
 });
