@@ -22,6 +22,7 @@ let currentTab = 'original';
 let abortController = null;
 let currentTabId = null;
 let isViewingHistory = false;
+let summarizeProgress = null;  // 总结进度状态
 
 async function loadConfig() {
   const stored = await chrome.storage.sync.get(['aiConfig']);
@@ -50,6 +51,40 @@ async function saveSummaryToStorage(data) {
       detectedLanguage: data.detectedLanguage
     }
   });
+}
+
+// ===== Progress State =====
+async function saveProgressState(state) {
+  const tabId = await getCurrentTabId();
+  const progressKey = `progress_${tabId}`;
+  await chrome.storage.local.set({
+    [progressKey]: {
+      ...state,
+      timestamp: Date.now()
+    }
+  });
+}
+
+async function getProgressState() {
+  const tabId = await getCurrentTabId();
+  const progressKey = `progress_${tabId}`;
+  const result = await chrome.storage.local.get(progressKey);
+  const progress = result[progressKey];
+
+  if (progress) {
+    // 检查是否过期（超过5分钟）
+    if (Date.now() - progress.timestamp > 5 * 60 * 1000) {
+      await clearProgressState();
+      return null;
+    }
+  }
+  return progress || null;
+}
+
+async function clearProgressState() {
+  const tabId = await getCurrentTabId();
+  const progressKey = `progress_${tabId}`;
+  await chrome.storage.local.remove(progressKey);
 }
 
 async function loadSummaryFromStorage() {
@@ -162,9 +197,128 @@ function showClearedMessage() {
 
 async function initPopup() {
   await getCurrentTabId();
+
+  // 先检查是否有正在进行的总结进度
+  const progress = await getProgressState();
+  if (progress && progress.status) {
+    restoreProgressState(progress);
+    return;
+  }
+
+  // 没有进度，显示已保存的总结
   const savedSummary = await loadSummaryFromStorage();
   if (savedSummary) {
     displaySummary(savedSummary);
+  }
+}
+
+function restoreProgressState(progress) {
+  const btn = document.getElementById('summarizeBtn');
+  const statusEl = document.getElementById('status');
+  const spinner = document.querySelector('.loading-spinner');
+  const statusText = document.getElementById('statusText');
+  const resultEl = document.getElementById('result');
+  const errorEl = document.getElementById('error');
+  const copyBtn = document.getElementById('copyBtn');
+
+  // 如果有pageData，恢复总结流程
+  if (progress.status === 'summarizing' && progress.pageData) {
+    isSummarizing = true;
+    abortController = new AbortController();
+    btn.textContent = '停止';
+
+    statusEl.classList.add('loading');
+    spinner.classList.remove('hidden');
+    statusText.textContent = progress.statusText;
+    errorEl.classList.add('hidden');
+    resultEl.classList.add('hidden');
+    copyBtn.classList.add('hidden');
+
+    // 继续总结流程
+    continueSummarization(progress.pageData);
+  } else {
+    // 提取阶段，恢复UI状态
+    isSummarizing = true;
+    abortController = new AbortController();
+    btn.textContent = '停止';
+
+    statusEl.classList.add('loading');
+    spinner.classList.remove('hidden');
+    statusText.textContent = progress.statusText;
+  }
+}
+
+async function continueSummarization(pageData) {
+  const btn = document.getElementById('summarizeBtn');
+  const statusEl = document.getElementById('status');
+  const spinner = document.querySelector('.loading-spinner');
+  const statusText = document.getElementById('statusText');
+  const resultEl = document.getElementById('result');
+  const errorEl = document.getElementById('error');
+  const copyBtn = document.getElementById('copyBtn');
+
+  try {
+    const detectedLang = detectLanguage(pageData.content);
+    const result = await summarize(pageData.content, pageData.title, pageData.url, detectedLang);
+
+    bilingualSummary = {
+      original: result,
+      chinese: null,
+      detectedLanguage: detectedLang
+    };
+
+    const tabBar = document.getElementById('tabBar');
+    const tabs = tabBar.querySelectorAll('.tab-btn');
+
+    if (detectedLang !== 'zh') {
+      tabBar.style.display = 'flex';
+      tabs[0].textContent = LANGUAGE_NAMES[detectedLang] || detectedLang;
+      tabs[1].textContent = '中文';
+      tabs[0].classList.add('active');
+      tabs[1].classList.remove('active');
+    } else {
+      tabBar.style.display = 'none';
+    }
+
+    renderMarkdown(result.content);
+
+    if (result.usage) {
+      document.getElementById('tokenCount').textContent = `Token: ${result.usage.total_tokens}`;
+    }
+
+    resultEl.classList.remove('hidden');
+    copyBtn.classList.remove('hidden');
+
+    statusText.textContent = '总结完成';
+
+    // 清除进度并保存总结
+    await clearProgressState();
+    await saveSummaryToStorage({
+      url: pageData.url,
+      title: pageData.title,
+      original: result.content,
+      chinese: null,
+      detectedLanguage: detectedLang
+    });
+
+  } catch (err) {
+    await clearProgressState();
+    if (err.name === 'AbortError') {
+      statusText.textContent = '已停止';
+      btn.textContent = '总结';
+      isSummarizing = false;
+      return;
+    }
+    console.error(err);
+    errorEl.classList.remove('hidden');
+    document.getElementById('errorText').textContent = err.message;
+    statusText.textContent = '出错了';
+  } finally {
+    isSummarizing = false;
+    btn.textContent = '总结';
+    statusEl.classList.remove('loading');
+    spinner.classList.add('hidden');
+    abortController = null;
   }
 }
 
@@ -370,12 +524,13 @@ Now analyze and output the summary in ${nativeLang}:`;
       temperature: 0.7,
       max_tokens: 1500
     }),
-    signal: abortController?.signal
+    signal: abortController && abortController.signal
   });
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(`${provider} API 错误: ${error.error?.message || '未知错误'}`);
+    const errorMsg = (error.error && error.error.message) || '未知错误';
+    throw new Error(`${provider} API 错误: ${errorMsg}`);
   }
 
   const data = await response.json();
@@ -414,12 +569,13 @@ ${summaryContent}`;
       temperature: 0.7,
       max_tokens: 1500
     }),
-    signal: abortController?.signal
+    signal: abortController && abortController.signal
   });
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(`翻译失败: ${error.error?.message || '未知错误'}`);
+    const errorMsg = (error.error && error.error.message) || '未知错误';
+    throw new Error(`翻译失败: ${errorMsg}`);
   }
 
   const data = await response.json();
@@ -443,10 +599,20 @@ async function switchToChinese() {
   spinner.classList.remove('hidden');
   statusText.textContent = '正在翻译...';
 
+  // 保存翻译进度
+  await saveProgressState({
+    status: 'translating',
+    statusText: '正在翻译...',
+    summary: bilingualSummary
+  });
+
   try {
     bilingualSummary.chinese = await translateToChinese(bilingualSummary.original.content);
     renderMarkdown(bilingualSummary.chinese);
     currentTab = 'chinese';
+
+    // 清除翻译进度
+    await clearProgressState();
 
     if (bilingualSummary.original.usage) {
       const total = (bilingualSummary.original.usage.total_tokens || 0) * 2;
@@ -462,6 +628,7 @@ async function switchToChinese() {
       detectedLanguage: bilingualSummary.detectedLanguage
     });
   } catch (err) {
+    await clearProgressState();
     console.error(err);
     statusText.textContent = '翻译失败';
   } finally {
@@ -504,6 +671,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     abortController = new AbortController();
     btn.textContent = '停止';
 
+    // 保存进度状态
+    await saveProgressState({
+      status: 'extracting',
+      statusText: '正在提取页面内容...'
+    });
+
     try {
       statusEl.classList.add('loading');
       spinner.classList.remove('hidden');
@@ -517,8 +690,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       const pageData = await extractPageContent();
 
       if (pageData.length < 100) {
+        await clearProgressState();
         throw new Error('页面内容太少，无法总结');
       }
+
+      // 保存进度
+      await saveProgressState({
+        status: 'summarizing',
+        statusText: '正在生成总结...',
+        pageData: pageData
+      });
 
       statusText.textContent = '正在生成总结...';
 
@@ -558,6 +739,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       statusText.textContent = '总结完成';
 
+      // 清除进度状态
+      await clearProgressState();
+
       // 保存到storage
       await saveSummaryToStorage({
         url: pageData.url,
@@ -568,6 +752,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
     } catch (err) {
+      await clearProgressState();
       if (err.name === 'AbortError') {
         statusText.textContent = '已停止';
         return;
@@ -578,11 +763,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.textContent = '出错了';
     } finally {
       isSummarizing = false;
-      if (abortController?.signal.aborted) {
-        btn.textContent = '总结';
-      } else {
-        btn.textContent = '总结';
-      }
+      btn.textContent = '总结';
       statusEl.classList.remove('loading');
       spinner.classList.add('hidden');
       abortController = null;

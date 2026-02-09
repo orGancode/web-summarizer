@@ -35,8 +35,8 @@ body {
 
 /* Popup Container */
 .popup-container {
-  width: 360px;
-  min-height: 180px;
+  width: 400px;
+  min-height: 220px;
   background: var(--bg-primary);
 }
 
@@ -173,8 +173,8 @@ body {
 }
 
 .history-btn {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
