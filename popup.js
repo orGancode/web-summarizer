@@ -94,33 +94,49 @@ async function callAI(content, title, url) {
 
 // 构建优化后的 Prompt
 function buildPrompt(content, title, url) {
-  return `请对以下网页内容进行结构化总结。
+  return `你是一位资深的内容分析师，擅长将复杂信息转化为简洁易懂的总结。
 
-网页标题：${title}
-网页链接：${url}
+【任务】
+请对以下网页内容进行深度分析和总结，帮助读者快速抓住核心价值。
 
-内容：
+【网页信息】
+标题：${title}
+链接：${url}
+
+【网页内容】
 """
 ${content}
 """
 
-请按以下格式输出（使用 Markdown）：
+【输出要求】
+请严格按照以下 Markdown 格式输出，保持专业且有趣的风格：
 
-## 📌 核心观点
-用 2-3 句话概括文章核心观点。
+## 📌 一句话总结
+用 1 句话（不超过 50 字）精准概括文章核心价值。
+
+## 🎯 核心观点
+用 2-3 句话阐述文章的核心论点或主要发现，逻辑清晰，重点突出。
 
 ## 🔑 关键要点
+提取 3-5 个最重要的信息点，每个要点用 1 句话表达：
 - 要点 1
 - 要点 2
-- 要点 3（最多 5 个要点）
+- 要点 3
 
-## 💡 延伸思考
-提出 1-2 个与内容相关的思考问题。
+## 💡 实用建议
+如果内容包含可操作的建议，列出 1-2 条具体可行的建议。如果没有，请省略此部分。
 
-要求：
-- 使用中文输出
-- 保持客观准确
-- 如果内容是错误页面或无法识别，请说明"无法总结此页面"`;
+## 🤔 延伸思考
+提出 1 个引人深思的问题，激发读者进一步思考。
+
+【风格指南】
+- 语言简洁有力，避免冗长表述
+- 使用生动的比喻或类比增强可读性
+- 保持客观中立，不添加主观评价
+- 适当使用 emoji 增加趣味性
+- 如果内容是错误页面、广告或无意义内容，请直接回复"⚠️ 此页面内容不适合总结"
+
+现在开始分析并输出总结：`;
 }
 
 // 智谱 AI 调用
@@ -214,9 +230,20 @@ function renderResult(aiResponse) {
   // 解析 Markdown 结构
   const sections = parseMarkdownSections(content);
   
+  // 渲染一句话总结
+  const oneLineSummary = sections['一句话总结'] || sections['📌 一句话总结'] || '';
+  const oneLineSection = document.getElementById('oneLineSection');
+  const oneLineEl = document.getElementById('oneLineSummary');
+  if (oneLineSummary && oneLineSection && oneLineEl) {
+    oneLineEl.textContent = oneLineSummary;
+    oneLineSection.classList.remove('hidden');
+  } else if (oneLineSection) {
+    oneLineSection.classList.add('hidden');
+  }
+  
   // 渲染核心观点
   document.getElementById('summaryText').textContent = 
-    sections['核心观点'] || sections['📌 核心观点'] || '未找到总结';
+    sections['核心观点'] || sections['🎯 核心观点'] || '未找到总结';
   
   // 渲染关键要点
   const keyPointsList = document.getElementById('keyPointsList');
@@ -230,6 +257,36 @@ function renderResult(aiResponse) {
       keyPointsList.appendChild(li);
     }
   });
+  
+  // 渲染实用建议（如果有）
+  const practicalTips = sections['实用建议'] || sections['💡 实用建议'] || '';
+  const tipsSection = document.getElementById('tipsSection');
+  const tipsEl = document.getElementById('practicalTips');
+  if (practicalTips && tipsSection && tipsEl) {
+    tipsEl.innerHTML = '';
+    practicalTips.split('\n').forEach(line => {
+      const match = line.match(/^[-*]\s*(.+)/);
+      if (match) {
+        const li = document.createElement('li');
+        li.textContent = match[1];
+        tipsEl.appendChild(li);
+      }
+    });
+    tipsSection.classList.remove('hidden');
+  } else if (tipsSection) {
+    tipsSection.classList.add('hidden');
+  }
+  
+  // 渲染延伸思考（如果有）
+  const deepThinking = sections['延伸思考'] || sections['🤔 延伸思考'] || '';
+  const thinkingSection = document.getElementById('thinkingSection');
+  const thinkingEl = document.getElementById('deepThinking');
+  if (deepThinking && thinkingSection && thinkingEl) {
+    thinkingEl.textContent = deepThinking;
+    thinkingSection.classList.remove('hidden');
+  } else if (thinkingSection) {
+    thinkingSection.classList.add('hidden');
+  }
   
   // 显示元信息
   if (aiResponse.usage) {
@@ -323,11 +380,37 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // 复制按钮
   document.getElementById('copyBtn').addEventListener('click', async () => {
+    let text = '';
+    
+    // 一句话总结
+    const oneLineSummary = document.getElementById('oneLineSummary');
+    if (oneLineSummary && !oneLineSummary.classList.contains('hidden')) {
+      text += `📌 ${oneLineSummary.textContent}\n\n`;
+    }
+    
+    // 核心观点
     const summary = document.getElementById('summaryText').textContent;
+    text += `🎯 核心观点\n${summary}\n\n`;
+    
+    // 关键要点
     const points = Array.from(document.querySelectorAll('#keyPointsList li'))
       .map(li => `- ${li.textContent}`).join('\n');
+    text += `🔑 关键要点\n${points}\n`;
     
-    const text = `📌 核心观点\n${summary}\n\n🔑 关键要点\n${points}`;
+    // 实用建议
+    const tipsSection = document.getElementById('tipsSection');
+    if (tipsSection && !tipsSection.classList.contains('hidden')) {
+      const tips = Array.from(document.querySelectorAll('#practicalTips li'))
+        .map(li => `- ${li.textContent}`).join('\n');
+      text += `\n💡 实用建议\n${tips}\n`;
+    }
+    
+    // 延伸思考
+    const thinkingSection = document.getElementById('thinkingSection');
+    if (thinkingSection && !thinkingSection.classList.contains('hidden')) {
+      const thinking = document.getElementById('deepThinking').textContent;
+      text += `\n🤔 延伸思考\n${thinking}`;
+    }
     
     await navigator.clipboard.writeText(text);
     
