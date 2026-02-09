@@ -16,14 +16,11 @@ const CONFIG = {
   }
 };
 
-// 存储双语言总结结果
-let bilingualSummary = {
-  original: null,
-  chinese: null,
-  detectedLanguage: 'zh'
-};
+let bilingualSummary = { original: null, chinese: null, detectedLanguage: 'zh' };
+let isTranslating = false;
+let currentTab = 'original';
+let abortController = null;
 
-// 加载用户配置
 async function loadConfig() {
   const stored = await chrome.storage.sync.get(['aiConfig']);
   if (stored.aiConfig) {
@@ -31,26 +28,22 @@ async function loadConfig() {
   }
 }
 
-// ===== 内容提取 =====
 async function extractPageContent() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  
-  // 检查是否是允许的页面
+
   if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('edge://')) {
     throw new Error('无法在此页面运行（浏览器内部页面）');
   }
-  
+
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tab.id, { action: 'extract' }, async (response) => {
       if (chrome.runtime.lastError) {
-        // Content script 未加载，尝试动态注入
         try {
           await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             files: ['content.js']
           });
-          
-          // 注入成功后再次发送消息
+
           chrome.tabs.sendMessage(tab.id, { action: 'extract' }, (response2) => {
             if (chrome.runtime.lastError) {
               reject(new Error('无法访问页面内容，请刷新页面后重试'));
@@ -76,165 +69,120 @@ async function extractPageContent() {
   });
 }
 
-// ===== AI API 调用 =====
-async function callAI(content, title, url) {
-  const { provider, apiKeys, models } = CONFIG;
-  const apiKey = apiKeys[provider];
-  
-  if (!apiKey) {
-    throw new Error('请先设置 API Key（点击右上角 ⚙️）');
-  }
+const LANGUAGE_NAMES = {
+  'zh': '中文',
+  'en': 'English',
+  'ja': '日本語',
+  'ko': '한국어'
+};
 
-  // 检测语言
-  const detectedLanguage = detectLanguage(content, title);
-  bilingualSummary.detectedLanguage = detectedLanguage;
-  
-  // 生成原语种总结
-  const originalPrompt = buildPrompt(content, title, url, detectedLanguage);
-  const originalResponse = await callAIProvider(originalPrompt, apiKey, models[provider], provider);
-  bilingualSummary.original = originalResponse;
-  
-  // 如果不是中文，生成中文翻译
-  if (detectedLanguage !== 'zh') {
-    const chinesePrompt = buildTranslationPrompt(originalResponse.content);
-    const chineseResponse = await callAIProvider(chinesePrompt, apiKey, models[provider], provider);
-    bilingualSummary.chinese = chineseResponse;
-  } else {
-    bilingualSummary.chinese = null;
-  }
-  
-  return bilingualSummary;
-}
+function detectLanguage(content) {
+  const chineseChars = (content.match(/[\u4e00-\u9fa5]/g) || []).length;
+  const japaneseChars = (content.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g) || []).length;
+  const koreanChars = (content.match(/[\uAC00-\uD7AF\u1100-\u11FF]/g) || []).length;
+  const totalChars = content.length;
 
-// 调用具体的 AI 提供商
-async function callAIProvider(prompt, apiKey, model, provider) {
-  switch (provider) {
-    case 'zhipu':
-      return callZhipu(prompt, apiKey, model);
-    case 'openai':
-      return callOpenAI(prompt, apiKey, model);
-    case 'deepseek':
-      return callDeepSeek(prompt, apiKey, model);
-    default:
-      throw new Error('未知的 AI 提供商');
-  }
-}
+  const chineseRatio = chineseChars / totalChars;
+  const japaneseRatio = japaneseChars / totalChars;
+  const koreanRatio = koreanChars / totalChars;
 
-// 检测文本语言
-function detectLanguage(content, title) {
-  const text = (title + ' ' + content).substring(0, 500);
-  
-  // 简单的中文检测
-  const chineseRegex = /[\u4e00-\u9fa5]/;
-  const chineseMatches = text.match(chineseRegex);
-  const chineseRatio = chineseMatches ? chineseMatches.length / text.length : 0;
-  
-  // 如果中文字符占比超过 30%，认为是中文
-  if (chineseRatio > 0.3) {
-    return 'zh';
-  }
-  
-  // 检测其他语言
-  const englishRegex = /[a-zA-Z]/;
-  const englishMatches = text.match(englishRegex);
-  const englishRatio = englishMatches ? englishMatches.length / text.length : 0;
-  
-  if (englishRatio > 0.5) {
-    return 'en';
-  }
-  
-  // 默认返回英文
+  if (chineseRatio > 0.1) return 'zh';
+  if (japaneseRatio > 0.1) return 'ja';
+  if (koreanRatio > 0.1) return 'ko';
   return 'en';
 }
 
-// 构建优化后的 Prompt
-function buildPrompt(content, title, url, language = 'zh') {
+async function summarize(content, title, url, language) {
+  const { provider, apiKeys, models } = CONFIG;
+  const apiKey = apiKeys[provider];
+
+  if (!apiKey) {
+    throw new Error('请先设置 API Key（点击右上角设置按钮）');
+  }
+
   const isChinese = language === 'zh';
-  const outputLang = isChinese ? '中文' : '英文';
-  
-  return `你是一位资深的内容分析师，擅长将复杂信息转化为简洁易懂的总结。
+  const nativeLang = LANGUAGE_NAMES[language] || '原文语言';
+  const wordLimit = isChinese ? '50 字' : '20 words';
+  const prompt = `You are a professional content analyst. Analyze and summarize the following web content in ${nativeLang}.
 
-【任务】
-请对以下网页内容进行深度分析和总结，帮助读者快速抓住核心价值。
+【Task】
+Analyze and summarize the web content below to help readers quickly grasp the core value.
 
-【网页信息】
-标题：${title}
-链接：${url}
+【Web Info】
+Title: ${title}
+URL: ${url}
 
-【网页内容】
+【Content】
 """
 ${content}
 """
 
-【输出要求】
-请严格按照以下 Markdown 格式输出，保持专业且有趣的风格：
+【Output Format】
+Use the following Markdown format:
 
-## 📌 一句话总结
-用 1 句话（不超过 ${isChinese ? '50 字' : '20 words'}）精准概括文章核心价值。
+## 📌 One-sentence Summary
+In 1 sentence (no more than ${wordLimit}), summarize the core value of the article.
 
-## 🎯 核心观点
-用 2-3 句话阐述文章的核心论点或主要发现，逻辑清晰，重点突出。
+## 🎯 Key viewpoints
+In 2-3 sentences, explain the main arguments or findings.
 
-## 🔑 关键要点
-提取 3-5 个最重要的信息点，每个要点用 1 句话表达：
-- 要点 1
-- 要点 2
-- 要点 3
+## 🔑 Key Points
+Extract 3-5 most important points, each in 1 sentence:
+- Point 1
+- Point 2
+- Point 3
 
-## 💡 实用建议
-如果内容包含可操作的建议，列出 1-2 条具体可行的建议。如果没有，请省略此部分。
+## 💡 Practical Suggestions
+List 1-2 actionable suggestions if applicable. Skip if not applicable.
 
-## 🤔 延伸思考
-提出 1 个引人深思的问题，激发读者进一步思考。
+## 🤔 Extended Thinking
+Pose 1 thought-provoking question.
 
-【风格指南】
-- 使用${outputLang}输出
-- 语言简洁有力，避免冗长表述
-- 使用生动的比喻或类比增强可读性
-- 保持客观中立，不添加主观评价
-- 适当使用 emoji 增加趣味性
-- 如果内容是错误页面、广告或无意义内容，请直接回复"⚠️ 此页面内容不适合总结"
+【Style Guide】
+- Output in ${nativeLang}
+- Keep language concise and powerful
+- Use vivid metaphors or analogies
+- Stay objective and neutral
+- Use emojis appropriately
+- If content is an error page, ad, or meaningless, reply: "⚠️ This page is not suitable for summarization"
 
-现在开始分析并输出总结：`;
-}
+Now analyze and output the summary in ${nativeLang}:`;
 
-// 构建翻译 Prompt
-function buildTranslationPrompt(originalSummary) {
-  return `请将以下总结内容翻译成中文，保持原有的 Markdown 格式和 emoji 表情符号：
+  const endpoints = {
+    zhipu: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    openai: 'https://api.openai.com/v1/chat/completions',
+    deepseek: 'https://api.deepseek.com/chat/completions'
+  };
 
-${originalSummary}
+  const systemMessages = {
+    zhipu: language === 'en' ? 'You are a helpful assistant that summarizes web content.' : '你是一个专业的内容总结助手。',
+    openai: 'You are a helpful assistant that summarizes web content.',
+    deepseek: language === 'en' ? 'You are a helpful assistant that summarizes web content.' : '你是一个专业的内容总结助手。'
+  };
 
-要求：
-- 保持原有的结构和格式
-- 保持 emoji 表情符号
-- 翻译要准确、自然、流畅
-- 保持专业且有趣的风格`;
-}
-
-// 智谱 AI 调用
-async function callZhipu(prompt, apiKey, model) {
-  const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+  const response = await fetch(endpoints[provider], {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: model,
+      model: models[provider],
       messages: [
-        { role: 'system', content: '你是一个专业的内容总结助手，擅长提取关键信息并用简洁的语言表达。' },
+        { role: 'system', content: systemMessages[provider] },
         { role: 'user', content: prompt }
       ],
       temperature: 0.7,
       max_tokens: 1500
-    })
+    }),
+    signal: abortController?.signal
   });
-  
+
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(`智谱 API 错误: ${error.error?.message || '未知错误'}`);
+    throw new Error(`${provider} API 错误: ${error.error?.message || '未知错误'}`);
   }
-  
+
   const data = await response.json();
   return {
     content: data.choices[0].message.content,
@@ -242,320 +190,227 @@ async function callZhipu(prompt, apiKey, model) {
   };
 }
 
-// OpenAI 调用（类似结构）
-async function callOpenAI(prompt, apiKey, model) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+async function translateToChinese(summaryContent) {
+  const { provider, apiKeys, models } = CONFIG;
+  const apiKey = apiKeys[provider];
+
+  const prompt = `请将以下总结内容翻译成中文，保留 Markdown 格式：
+
+${summaryContent}`;
+
+  const endpoints = {
+    zhipu: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    openai: 'https://api.openai.com/v1/chat/completions',
+    deepseek: 'https://api.deepseek.com/chat/completions'
+  };
+
+  const response = await fetch(endpoints[provider], {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: model,
+      model: models[provider],
       messages: [
-        { role: 'system', content: 'You are a helpful assistant that summarizes web content.' },
+        { role: 'system', content: '你是一个专业的内容翻译助手。' },
         { role: 'user', content: prompt }
       ],
       temperature: 0.7,
       max_tokens: 1500
-    })
+    }),
+    signal: abortController?.signal
   });
-  
-  // 错误处理...
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`翻译失败: ${error.error?.message || '未知错误'}`);
+  }
+
   const data = await response.json();
-  return {
-    content: data.choices[0].message.content,
-    usage: data.usage
-  };
+  return data.choices[0].message.content;
 }
 
-// DeepSeek 调用
-async function callDeepSeek(prompt, apiKey, model) {
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: '你是一个专业的内容总结助手。' },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 1500
-    })
-  });
-  
-  const data = await response.json();
-  return {
-    content: data.choices[0].message.content,
-    usage: data.usage
-  };
+function renderMarkdown(content) {
+  const html = marked.parse(content);
+  document.getElementById('markdownContent').innerHTML = html;
 }
 
-// ===== UI 渲染 =====
-function renderResult(bilingualData) {
-  const { original, chinese, detectedLanguage } = bilingualData;
-  
-  // 显示或隐藏 tab 切换组件
-  const tabContainer = document.getElementById('tabContainer');
-  if (detectedLanguage !== 'zh' && chinese) {
-    tabContainer.classList.remove('hidden');
-    // 设置 tab 标签
-    const originalTab = document.getElementById('originalTab');
-    const chineseTab = document.getElementById('chineseTab');
-    
-    if (detectedLanguage === 'en') {
-      originalTab.textContent = '🇺🇸 English';
-      chineseTab.textContent = '🇨🇳 中文';
-    } else {
-      originalTab.textContent = '🌐 原文';
-      chineseTab.textContent = '🇨🇳 中文';
+async function switchToChinese() {
+  if (isTranslating || bilingualSummary.chinese) return;
+
+  const statusText = document.getElementById('statusText');
+  const spinner = document.querySelector('.loading-spinner');
+  const statusEl = document.getElementById('status');
+
+  isTranslating = true;
+  statusEl.classList.add('loading');
+  spinner.classList.remove('hidden');
+  statusText.textContent = '正在翻译...';
+
+  try {
+    bilingualSummary.chinese = await translateToChinese(bilingualSummary.original.content);
+    renderMarkdown(bilingualSummary.chinese);
+    currentTab = 'chinese';
+
+    if (bilingualSummary.original.usage) {
+      const total = (bilingualSummary.original.usage.total_tokens || 0) * 2;
+      document.getElementById('tokenCount').textContent = `Token: ~${total}`;
     }
-    
-    // 默认显示原语种
-    renderSummaryContent(original.content);
-    setActiveTab('original');
-  } else {
-    tabContainer.classList.add('hidden');
-    renderSummaryContent(original.content);
-  }
-  
-  // 显示元信息
-  if (original.usage) {
-    document.getElementById('tokenCount').textContent = 
-      `Token: ${original.usage.total_tokens}`;
-  }
-  
-  // 显示结果区域
-  document.getElementById('result').classList.remove('hidden');
-  document.getElementById('copyBtn').classList.remove('hidden');
-}
-
-// 渲染总结内容
-function renderSummaryContent(content) {
-  // 解析 Markdown 结构
-  const sections = parseMarkdownSections(content);
-  
-  // 渲染一句话总结
-  const oneLineSummary = sections['一句话总结'] || sections['📌 一句话总结'] || sections['One-line Summary'] || '';
-  const oneLineSection = document.getElementById('oneLineSection');
-  const oneLineEl = document.getElementById('oneLineSummary');
-  if (oneLineSummary && oneLineSection && oneLineEl) {
-    oneLineEl.textContent = oneLineSummary;
-    oneLineSection.classList.remove('hidden');
-  } else if (oneLineSection) {
-    oneLineSection.classList.add('hidden');
-  }
-  
-  // 渲染核心观点
-  document.getElementById('summaryText').textContent = 
-    sections['核心观点'] || sections['🎯 核心观点'] || sections['Core Points'] || '未找到总结';
-  
-  // 渲染关键要点
-  const keyPointsList = document.getElementById('keyPointsList');
-  keyPointsList.innerHTML = '';
-  const points = sections['关键要点'] || sections['🔑 关键要点'] || sections['Key Points'] || '';
-  points.split('\n').forEach(line => {
-    const match = line.match(/^[-*]\s*(.+)/);
-    if (match) {
-      const li = document.createElement('li');
-      li.textContent = match[1];
-      keyPointsList.appendChild(li);
-    }
-  });
-  
-  // 渲染实用建议（如果有）
-  const practicalTips = sections['实用建议'] || sections['💡 实用建议'] || sections['Practical Tips'] || '';
-  const tipsSection = document.getElementById('tipsSection');
-  const tipsEl = document.getElementById('practicalTips');
-  if (practicalTips && tipsSection && tipsEl) {
-    tipsEl.innerHTML = '';
-    practicalTips.split('\n').forEach(line => {
-      const match = line.match(/^[-*]\s*(.+)/);
-      if (match) {
-        const li = document.createElement('li');
-        li.textContent = match[1];
-        tipsEl.appendChild(li);
-      }
-    });
-    tipsSection.classList.remove('hidden');
-  } else if (tipsSection) {
-    tipsSection.classList.add('hidden');
-  }
-  
-  // 渲染延伸思考（如果有）
-  const deepThinking = sections['延伸思考'] || sections['🤔 延伸思考'] || sections['Deep Thinking'] || '';
-  const thinkingSection = document.getElementById('thinkingSection');
-  const thinkingEl = document.getElementById('deepThinking');
-  if (deepThinking && thinkingSection && thinkingEl) {
-    thinkingEl.textContent = deepThinking;
-    thinkingSection.classList.remove('hidden');
-  } else if (thinkingSection) {
-    thinkingSection.classList.add('hidden');
+  } catch (err) {
+    console.error(err);
+    statusText.textContent = '翻译失败';
+  } finally {
+    isTranslating = false;
+    statusEl.classList.remove('loading');
+    spinner.classList.add('hidden');
   }
 }
 
-// 设置激活的 tab
-function setActiveTab(tab) {
-  const originalTab = document.getElementById('originalTab');
-  const chineseTab = document.getElementById('chineseTab');
-  
-  if (tab === 'original') {
-    originalTab.classList.add('active');
-    chineseTab.classList.remove('active');
-  } else {
-    chineseTab.classList.add('active');
-    originalTab.classList.remove('active');
-  }
-}
+let isSummarizing = false;
 
-// 简单的 Markdown 分块解析
-function parseMarkdownSections(markdown) {
-  const sections = {};
-  const lines = markdown.split('\n');
-  let currentSection = null;
-  let currentContent = [];
-  
-  lines.forEach(line => {
-    const headerMatch = line.match(/^##\s+(.+)/);
-    if (headerMatch) {
-      if (currentSection) {
-        sections[currentSection] = currentContent.join('\n').trim();
-      }
-      currentSection = headerMatch[1].trim();
-      currentContent = [];
-    } else if (currentSection) {
-      currentContent.push(line);
-    }
-  });
-  
-  if (currentSection) {
-    sections[currentSection] = currentContent.join('\n').trim();
-  }
-  
-  return sections;
-}
-
-// ===== 事件绑定 =====
 document.addEventListener('DOMContentLoaded', () => {
   loadConfig();
-  
-  // 总结按钮
+
   document.getElementById('summarizeBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('summarizeBtn');
     const statusEl = document.getElementById('status');
     const statusText = document.getElementById('statusText');
     const spinner = document.querySelector('.loading-spinner');
     const resultEl = document.getElementById('result');
     const errorEl = document.getElementById('error');
-    
+    const copyBtn = document.getElementById('copyBtn');
+
+    if (isSummarizing) {
+      if (confirm('确定要停止总结任务吗？')) {
+        if (abortController) {
+          abortController.abort();
+        }
+        isSummarizing = false;
+        btn.textContent = '总结';
+        statusText.textContent = '已停止';
+        statusEl.classList.remove('loading');
+        spinner.classList.add('hidden');
+      }
+      return;
+    }
+
+    isSummarizing = true;
+    abortController = new AbortController();
+    btn.textContent = '停止';
+
     try {
-      // UI 状态：加载中
       statusEl.classList.add('loading');
       spinner.classList.remove('hidden');
       statusText.textContent = '正在提取页面内容...';
       resultEl.classList.add('hidden');
       errorEl.classList.add('hidden');
-      
-      // 1. 提取内容
+      copyBtn.classList.add('hidden');
+      document.getElementById('tokenCount').textContent = '';
+
       const startTime = Date.now();
       const pageData = await extractPageContent();
-      
+
       if (pageData.length < 100) {
-        throw new Error('页面内容太少，无法总结（可能是首页或列表页）');
+        throw new Error('页面内容太少，无法总结');
       }
-      
+
       statusText.textContent = '正在生成总结...';
-      
-      // 2. 调用 AI
-      const aiResponse = await callAI(pageData.content, pageData.title, pageData.url);
-      
-      // 3. 渲染结果
-      renderResult(aiResponse);
-      
+
+      const detectedLang = detectLanguage(pageData.content);
+      const result = await summarize(pageData.content, pageData.title, pageData.url, detectedLang);
+
+      bilingualSummary = {
+        original: result,
+        chinese: null,
+        detectedLanguage: detectedLang
+      };
+
+      const tabBar = document.getElementById('tabBar');
+      const tabs = tabBar.querySelectorAll('.tab-btn');
+
+      if (detectedLang !== 'zh') {
+        tabBar.style.display = 'flex';
+        tabs[0].textContent = LANGUAGE_NAMES[detectedLang] || detectedLang;
+        tabs[1].textContent = '中文';
+        tabs[0].classList.add('active');
+        tabs[1].classList.remove('active');
+      } else {
+        tabBar.style.display = 'none';
+      }
+
+      renderMarkdown(result.content);
+
+      if (result.usage) {
+        document.getElementById('tokenCount').textContent = `Token: ${result.usage.total_tokens}`;
+      }
+
+      resultEl.classList.remove('hidden');
+      copyBtn.classList.remove('hidden');
+
       const timeCost = ((Date.now() - startTime) / 1000).toFixed(1);
       document.getElementById('timeCost').textContent = `${timeCost}s`;
-      
+
       statusText.textContent = '总结完成';
-      
+
     } catch (err) {
+      if (err.name === 'AbortError') {
+        statusText.textContent = '已停止';
+        return;
+      }
       console.error(err);
       errorEl.classList.remove('hidden');
       document.getElementById('errorText').textContent = err.message;
       statusText.textContent = '出错了';
     } finally {
+      isSummarizing = false;
+      if (abortController?.signal.aborted) {
+        btn.textContent = '总结';
+      } else {
+        btn.textContent = '总结';
+      }
       statusEl.classList.remove('loading');
       spinner.classList.add('hidden');
+      abortController = null;
     }
   });
-  
-  // 复制按钮
+
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const tab = btn.dataset.tab;
+
+      if (tab === 'chinese') {
+        await switchToChinese();
+      } else {
+        renderMarkdown(bilingualSummary.original.content);
+      }
+
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
   document.getElementById('copyBtn').addEventListener('click', async () => {
-    let text = '';
-    
-    // 一句话总结
-    const oneLineSummary = document.getElementById('oneLineSummary');
-    if (oneLineSummary && !oneLineSummary.classList.contains('hidden')) {
-      text += `📌 ${oneLineSummary.textContent}\n\n`;
-    }
-    
-    // 核心观点
-    const summary = document.getElementById('summaryText').textContent;
-    text += `🎯 核心观点\n${summary}\n\n`;
-    
-    // 关键要点
-    const points = Array.from(document.querySelectorAll('#keyPointsList li'))
-      .map(li => `- ${li.textContent}`).join('\n');
-    text += `🔑 关键要点\n${points}\n`;
-    
-    // 实用建议
-    const tipsSection = document.getElementById('tipsSection');
-    if (tipsSection && !tipsSection.classList.contains('hidden')) {
-      const tips = Array.from(document.querySelectorAll('#practicalTips li'))
-        .map(li => `- ${li.textContent}`).join('\n');
-      text += `\n💡 实用建议\n${tips}\n`;
-    }
-    
-    // 延伸思考
-    const thinkingSection = document.getElementById('thinkingSection');
-    if (thinkingSection && !thinkingSection.classList.contains('hidden')) {
-      const thinking = document.getElementById('deepThinking').textContent;
-      text += `\n🤔 延伸思考\n${thinking}`;
-    }
-    
-    await navigator.clipboard.writeText(text);
-    
+    const activeTab = document.querySelector('.tab-btn.active');
+    const isChinese = activeTab && activeTab.dataset.tab === 'chinese';
+    const content = isChinese && bilingualSummary.chinese
+      ? bilingualSummary.chinese
+      : bilingualSummary.original.content;
+
+    await navigator.clipboard.writeText(content);
+
     const btn = document.getElementById('copyBtn');
-    const originalText = btn.textContent;
-    btn.textContent = '✅ 已复制';
-    setTimeout(() => btn.textContent = originalText, 2000);
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> 已复制`;
+    setTimeout(() => {
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制结果`;
+    }, 2000);
   });
-  
-  // 设置按钮
+
   document.getElementById('settingsBtn').addEventListener('click', () => {
     chrome.runtime.openOptionsPage();
   });
-  
-  // 重试按钮
+
   document.getElementById('retryBtn').addEventListener('click', () => {
     document.getElementById('summarizeBtn').click();
-  });
-  
-  // Tab 切换 - 原语种
-  document.getElementById('originalTab').addEventListener('click', () => {
-    if (bilingualSummary.original) {
-      renderSummaryContent(bilingualSummary.original.content);
-      setActiveTab('original');
-    }
-  });
-  
-  // Tab 切换 - 中文
-  document.getElementById('chineseTab').addEventListener('click', () => {
-    if (bilingualSummary.chinese) {
-      renderSummaryContent(bilingualSummary.chinese.content);
-      setActiveTab('chinese');
-    }
   });
 });
