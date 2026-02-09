@@ -16,6 +16,13 @@ const CONFIG = {
   }
 };
 
+// 存储双语言总结结果
+let bilingualSummary = {
+  original: null,
+  chinese: null,
+  detectedLanguage: 'zh'
+};
+
 // 加载用户配置
 async function loadConfig() {
   const stored = await chrome.storage.sync.get(['aiConfig']);
@@ -78,22 +85,73 @@ async function callAI(content, title, url) {
     throw new Error('请先设置 API Key（点击右上角 ⚙️）');
   }
 
-  const prompt = buildPrompt(content, title, url);
+  // 检测语言
+  const detectedLanguage = detectLanguage(content, title);
+  bilingualSummary.detectedLanguage = detectedLanguage;
   
+  // 生成原语种总结
+  const originalPrompt = buildPrompt(content, title, url, detectedLanguage);
+  const originalResponse = await callAIProvider(originalPrompt, apiKey, models[provider], provider);
+  bilingualSummary.original = originalResponse;
+  
+  // 如果不是中文，生成中文翻译
+  if (detectedLanguage !== 'zh') {
+    const chinesePrompt = buildTranslationPrompt(originalResponse.content);
+    const chineseResponse = await callAIProvider(chinesePrompt, apiKey, models[provider], provider);
+    bilingualSummary.chinese = chineseResponse;
+  } else {
+    bilingualSummary.chinese = null;
+  }
+  
+  return bilingualSummary;
+}
+
+// 调用具体的 AI 提供商
+async function callAIProvider(prompt, apiKey, model, provider) {
   switch (provider) {
     case 'zhipu':
-      return callZhipu(prompt, apiKey, models.zhipu);
+      return callZhipu(prompt, apiKey, model);
     case 'openai':
-      return callOpenAI(prompt, apiKey, models.openai);
+      return callOpenAI(prompt, apiKey, model);
     case 'deepseek':
-      return callDeepSeek(prompt, apiKey, models.deepseek);
+      return callDeepSeek(prompt, apiKey, model);
     default:
       throw new Error('未知的 AI 提供商');
   }
 }
 
+// 检测文本语言
+function detectLanguage(content, title) {
+  const text = (title + ' ' + content).substring(0, 500);
+  
+  // 简单的中文检测
+  const chineseRegex = /[\u4e00-\u9fa5]/;
+  const chineseMatches = text.match(chineseRegex);
+  const chineseRatio = chineseMatches ? chineseMatches.length / text.length : 0;
+  
+  // 如果中文字符占比超过 30%，认为是中文
+  if (chineseRatio > 0.3) {
+    return 'zh';
+  }
+  
+  // 检测其他语言
+  const englishRegex = /[a-zA-Z]/;
+  const englishMatches = text.match(englishRegex);
+  const englishRatio = englishMatches ? englishMatches.length / text.length : 0;
+  
+  if (englishRatio > 0.5) {
+    return 'en';
+  }
+  
+  // 默认返回英文
+  return 'en';
+}
+
 // 构建优化后的 Prompt
-function buildPrompt(content, title, url) {
+function buildPrompt(content, title, url, language = 'zh') {
+  const isChinese = language === 'zh';
+  const outputLang = isChinese ? '中文' : '英文';
+  
   return `你是一位资深的内容分析师，擅长将复杂信息转化为简洁易懂的总结。
 
 【任务】
@@ -112,7 +170,7 @@ ${content}
 请严格按照以下 Markdown 格式输出，保持专业且有趣的风格：
 
 ## 📌 一句话总结
-用 1 句话（不超过 50 字）精准概括文章核心价值。
+用 1 句话（不超过 ${isChinese ? '50 字' : '20 words'}）精准概括文章核心价值。
 
 ## 🎯 核心观点
 用 2-3 句话阐述文章的核心论点或主要发现，逻辑清晰，重点突出。
@@ -130,6 +188,7 @@ ${content}
 提出 1 个引人深思的问题，激发读者进一步思考。
 
 【风格指南】
+- 使用${outputLang}输出
 - 语言简洁有力，避免冗长表述
 - 使用生动的比喻或类比增强可读性
 - 保持客观中立，不添加主观评价
@@ -137,6 +196,19 @@ ${content}
 - 如果内容是错误页面、广告或无意义内容，请直接回复"⚠️ 此页面内容不适合总结"
 
 现在开始分析并输出总结：`;
+}
+
+// 构建翻译 Prompt
+function buildTranslationPrompt(originalSummary) {
+  return `请将以下总结内容翻译成中文，保持原有的 Markdown 格式和 emoji 表情符号：
+
+${originalSummary}
+
+要求：
+- 保持原有的结构和格式
+- 保持 emoji 表情符号
+- 翻译要准确、自然、流畅
+- 保持专业且有趣的风格`;
 }
 
 // 智谱 AI 调用
@@ -224,14 +296,51 @@ async function callDeepSeek(prompt, apiKey, model) {
 }
 
 // ===== UI 渲染 =====
-function renderResult(aiResponse) {
-  const content = aiResponse.content;
+function renderResult(bilingualData) {
+  const { original, chinese, detectedLanguage } = bilingualData;
   
+  // 显示或隐藏 tab 切换组件
+  const tabContainer = document.getElementById('tabContainer');
+  if (detectedLanguage !== 'zh' && chinese) {
+    tabContainer.classList.remove('hidden');
+    // 设置 tab 标签
+    const originalTab = document.getElementById('originalTab');
+    const chineseTab = document.getElementById('chineseTab');
+    
+    if (detectedLanguage === 'en') {
+      originalTab.textContent = '🇺🇸 English';
+      chineseTab.textContent = '🇨🇳 中文';
+    } else {
+      originalTab.textContent = '🌐 原文';
+      chineseTab.textContent = '🇨🇳 中文';
+    }
+    
+    // 默认显示原语种
+    renderSummaryContent(original.content);
+    setActiveTab('original');
+  } else {
+    tabContainer.classList.add('hidden');
+    renderSummaryContent(original.content);
+  }
+  
+  // 显示元信息
+  if (original.usage) {
+    document.getElementById('tokenCount').textContent = 
+      `Token: ${original.usage.total_tokens}`;
+  }
+  
+  // 显示结果区域
+  document.getElementById('result').classList.remove('hidden');
+  document.getElementById('copyBtn').classList.remove('hidden');
+}
+
+// 渲染总结内容
+function renderSummaryContent(content) {
   // 解析 Markdown 结构
   const sections = parseMarkdownSections(content);
   
   // 渲染一句话总结
-  const oneLineSummary = sections['一句话总结'] || sections['📌 一句话总结'] || '';
+  const oneLineSummary = sections['一句话总结'] || sections['📌 一句话总结'] || sections['One-line Summary'] || '';
   const oneLineSection = document.getElementById('oneLineSection');
   const oneLineEl = document.getElementById('oneLineSummary');
   if (oneLineSummary && oneLineSection && oneLineEl) {
@@ -243,12 +352,12 @@ function renderResult(aiResponse) {
   
   // 渲染核心观点
   document.getElementById('summaryText').textContent = 
-    sections['核心观点'] || sections['🎯 核心观点'] || '未找到总结';
+    sections['核心观点'] || sections['🎯 核心观点'] || sections['Core Points'] || '未找到总结';
   
   // 渲染关键要点
   const keyPointsList = document.getElementById('keyPointsList');
   keyPointsList.innerHTML = '';
-  const points = sections['关键要点'] || sections['🔑 关键要点'] || '';
+  const points = sections['关键要点'] || sections['🔑 关键要点'] || sections['Key Points'] || '';
   points.split('\n').forEach(line => {
     const match = line.match(/^[-*]\s*(.+)/);
     if (match) {
@@ -259,7 +368,7 @@ function renderResult(aiResponse) {
   });
   
   // 渲染实用建议（如果有）
-  const practicalTips = sections['实用建议'] || sections['💡 实用建议'] || '';
+  const practicalTips = sections['实用建议'] || sections['💡 实用建议'] || sections['Practical Tips'] || '';
   const tipsSection = document.getElementById('tipsSection');
   const tipsEl = document.getElementById('practicalTips');
   if (practicalTips && tipsSection && tipsEl) {
@@ -278,7 +387,7 @@ function renderResult(aiResponse) {
   }
   
   // 渲染延伸思考（如果有）
-  const deepThinking = sections['延伸思考'] || sections['🤔 延伸思考'] || '';
+  const deepThinking = sections['延伸思考'] || sections['🤔 延伸思考'] || sections['Deep Thinking'] || '';
   const thinkingSection = document.getElementById('thinkingSection');
   const thinkingEl = document.getElementById('deepThinking');
   if (deepThinking && thinkingSection && thinkingEl) {
@@ -287,16 +396,20 @@ function renderResult(aiResponse) {
   } else if (thinkingSection) {
     thinkingSection.classList.add('hidden');
   }
+}
+
+// 设置激活的 tab
+function setActiveTab(tab) {
+  const originalTab = document.getElementById('originalTab');
+  const chineseTab = document.getElementById('chineseTab');
   
-  // 显示元信息
-  if (aiResponse.usage) {
-    document.getElementById('tokenCount').textContent = 
-      `Token: ${aiResponse.usage.total_tokens}`;
+  if (tab === 'original') {
+    originalTab.classList.add('active');
+    chineseTab.classList.remove('active');
+  } else {
+    chineseTab.classList.add('active');
+    originalTab.classList.remove('active');
   }
-  
-  // 显示结果区域
-  document.getElementById('result').classList.remove('hidden');
-  document.getElementById('copyBtn').classList.remove('hidden');
 }
 
 // 简单的 Markdown 分块解析
@@ -428,5 +541,21 @@ document.addEventListener('DOMContentLoaded', () => {
   // 重试按钮
   document.getElementById('retryBtn').addEventListener('click', () => {
     document.getElementById('summarizeBtn').click();
+  });
+  
+  // Tab 切换 - 原语种
+  document.getElementById('originalTab').addEventListener('click', () => {
+    if (bilingualSummary.original) {
+      renderSummaryContent(bilingualSummary.original.content);
+      setActiveTab('original');
+    }
+  });
+  
+  // Tab 切换 - 中文
+  document.getElementById('chineseTab').addEventListener('click', () => {
+    if (bilingualSummary.chinese) {
+      renderSummaryContent(bilingualSummary.chinese.content);
+      setActiveTab('chinese');
+    }
   });
 });
