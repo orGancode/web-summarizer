@@ -20,12 +20,207 @@ let bilingualSummary = { original: null, chinese: null, detectedLanguage: 'zh' }
 let isTranslating = false;
 let currentTab = 'original';
 let abortController = null;
+let currentTabId = null;
+let isViewingHistory = false;
 
 async function loadConfig() {
   const stored = await chrome.storage.sync.get(['aiConfig']);
   if (stored.aiConfig) {
     Object.assign(CONFIG, stored.aiConfig);
   }
+}
+
+// ===== Storage Functions =====
+async function getCurrentTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  currentTabId = tab.id;
+  return tab.id;
+}
+
+async function saveSummaryToStorage(data) {
+  const tabId = await getCurrentTabId();
+  await chrome.runtime.sendMessage({
+    action: 'saveSummary',
+    tabId: tabId,
+    data: {
+      url: data.url,
+      title: data.title,
+      original: data.original,
+      chinese: data.chinese,
+      detectedLanguage: data.detectedLanguage
+    }
+  });
+}
+
+async function loadSummaryFromStorage() {
+  const tabId = await getCurrentTabId();
+  const response = await chrome.runtime.sendMessage({
+    action: 'getSummary',
+    tabId: tabId
+  });
+  if (response.success && response.summary) {
+    return response.summary;
+  }
+  return null;
+}
+
+async function clearSummaryFromStorage() {
+  const tabId = await getCurrentTabId();
+  await chrome.runtime.sendMessage({
+    action: 'clearSummary',
+    tabId: tabId
+  });
+}
+
+async function loadAllSummaries() {
+  const response = await chrome.runtime.sendMessage({ action: 'getAllSummaries' });
+  if (response.success) {
+    return response.summaries;
+  }
+  return [];
+}
+
+// ===== Message Listener =====
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  switch (request.action) {
+    case 'showSummary':
+      if (request.summary) {
+        displaySummary(request.summary);
+        clearBadge();
+      }
+      break;
+
+    case 'noSummary':
+      showNoSummaryMessage();
+      break;
+
+    case 'summaryCleared':
+      showClearedMessage();
+      break;
+  }
+});
+
+function clearBadge() {
+  chrome.runtime.sendMessage({ action: 'clearBadge' });
+}
+
+function displaySummary(summary) {
+  const resultEl = document.getElementById('result');
+  const errorEl = document.getElementById('error');
+  const copyBtn = document.getElementById('copyBtn');
+
+  errorEl.classList.add('hidden');
+
+  bilingualSummary = {
+    original: { content: summary.original },
+    chinese: summary.chinese,
+    detectedLanguage: summary.detectedLanguage || 'zh'
+  };
+
+  const tabBar = document.getElementById('tabBar');
+  const tabs = tabBar.querySelectorAll('.tab-btn');
+
+  if (summary.detectedLanguage && summary.detectedLanguage !== 'zh') {
+    tabBar.style.display = 'flex';
+    tabs[0].textContent = LANGUAGE_NAMES[summary.detectedLanguage] || summary.detectedLanguage;
+    tabs[1].textContent = '中文';
+    tabs[0].classList.add('active');
+    tabs[1].classList.remove('active');
+    renderMarkdown(summary.original);
+  } else {
+    tabBar.style.display = 'none';
+    renderMarkdown(summary.original);
+  }
+
+  if (summary.chinese) {
+    bilingualSummary.chinese = { content: summary.chinese };
+  }
+
+  resultEl.classList.remove('hidden');
+  copyBtn.classList.remove('hidden');
+  document.getElementById('statusText').textContent = '已加载缓存总结';
+
+  if (summary.timestamp) {
+    const date = new Date(summary.timestamp);
+    document.getElementById('timeCost').textContent = date.toLocaleString('zh-CN');
+  }
+}
+
+function showNoSummaryMessage() {
+  const errorEl = document.getElementById('error');
+  errorEl.classList.remove('hidden');
+  document.getElementById('errorText').textContent = '当前页面还没有总结记录，点击"总结"按钮生成。';
+  document.getElementById('statusText').textContent = '无总结记录';
+}
+
+function showClearedMessage() {
+  const errorEl = document.getElementById('error');
+  errorEl.classList.remove('hidden');
+  document.getElementById('errorText').textContent = '已清除当前页面的总结记录。';
+  document.getElementById('statusText').textContent = '已清除';
+}
+
+async function initPopup() {
+  await getCurrentTabId();
+  const savedSummary = await loadSummaryFromStorage();
+  if (savedSummary) {
+    displaySummary(savedSummary);
+  }
+}
+
+// ===== History Modal =====
+async function showHistory() {
+  const modal = document.getElementById('historyModal');
+  const historyList = document.getElementById('historyList');
+
+  modal.classList.remove('hidden');
+  historyList.innerHTML = '<div class="history-empty">加载中...</div>';
+
+  const summaries = await loadAllSummaries();
+
+  if (summaries.length === 0) {
+    historyList.innerHTML = '<div class="history-empty">暂无总结历史</div>';
+    return;
+  }
+
+  historyList.innerHTML = summaries.slice(0, 20).map(item => {
+    const date = new Date(item.timestamp);
+    const url = new URL(item.url);
+    const title = item.title || url.hostname;
+    const lang = LANGUAGE_NAMES[item.detectedLanguage] || '原文';
+
+    return `
+      <div class="history-item" data-key="${item.key}">
+        <div class="history-item-title">${escapeHtml(title)}</div>
+        <div class="history-item-meta">
+          <span>${lang}</span>
+          <span>${date.toLocaleDateString('zh-CN')} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Add click handlers
+  historyList.querySelectorAll('.history-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.key;
+      const summary = summaries.find(s => s.key === key);
+      if (summary) {
+        displaySummary(summary);
+        modal.classList.add('hidden');
+      }
+    });
+  });
+}
+
+function hideHistory() {
+  document.getElementById('historyModal').classList.add('hidden');
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 async function extractPageContent() {
@@ -257,6 +452,15 @@ async function switchToChinese() {
       const total = (bilingualSummary.original.usage.total_tokens || 0) * 2;
       document.getElementById('tokenCount').textContent = `Token: ~${total}`;
     }
+
+    // 保存中文翻译到storage
+    await saveSummaryToStorage({
+      url: '',
+      title: '',
+      original: bilingualSummary.original.content,
+      chinese: bilingualSummary.chinese,
+      detectedLanguage: bilingualSummary.detectedLanguage
+    });
   } catch (err) {
     console.error(err);
     statusText.textContent = '翻译失败';
@@ -269,8 +473,9 @@ async function switchToChinese() {
 
 let isSummarizing = false;
 
-document.addEventListener('DOMContentLoaded', () => {
-  loadConfig();
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadConfig();
+  await initPopup();
 
   document.getElementById('summarizeBtn').addEventListener('click', async () => {
     const btn = document.getElementById('summarizeBtn');
@@ -353,6 +558,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       statusText.textContent = '总结完成';
 
+      // 保存到storage
+      await saveSummaryToStorage({
+        url: pageData.url,
+        title: pageData.title,
+        original: result.content,
+        chinese: null,
+        detectedLanguage: detectedLang
+      });
+
     } catch (err) {
       if (err.name === 'AbortError') {
         statusText.textContent = '已停止';
@@ -412,5 +626,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('retryBtn').addEventListener('click', () => {
     document.getElementById('summarizeBtn').click();
+  });
+
+  document.getElementById('historyBtn').addEventListener('click', showHistory);
+
+  document.getElementById('closeHistoryBtn').addEventListener('click', hideHistory);
+
+  document.getElementById('historyModal').addEventListener('click', (e) => {
+    if (e.target.id === 'historyModal') {
+      hideHistory();
+    }
   });
 });
