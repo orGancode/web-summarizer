@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Summarizer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>网页摘要</h1>
+    <div id="status" class="status">点击按钮提取内容</div>
+    <button id="summarizeBtn" class="btn-primary">提取摘要</button>
+    <div id="result" class="result hidden">
+      <h2>摘要结果</h2>
+      <div id="summaryText"></div>
+      <button id="copyBtn" class="btn-secondary">复制</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
