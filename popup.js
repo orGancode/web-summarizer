@@ -140,9 +140,15 @@ function clearBadge() {
 }
 
 function displaySummary(summary) {
+  const statusEl = document.getElementById('status');
+  const spinner = document.querySelector('.loading-spinner');
   const resultEl = document.getElementById('result');
   const errorEl = document.getElementById('error');
   const copyBtn = document.getElementById('copyBtn');
+
+  // 停止loading状态
+  statusEl.classList.remove('loading');
+  spinner.classList.add('hidden');
 
   errorEl.classList.add('hidden');
 
@@ -198,17 +204,25 @@ function showClearedMessage() {
 async function initPopup() {
   await getCurrentTabId();
 
-  // 先检查是否有正在进行的总结进度
-  const progress = await getProgressState();
-  if (progress && progress.status) {
-    restoreProgressState(progress);
+  // 同时检查进度和缓存总结
+  const [progress, savedSummary] = await Promise.all([
+    getProgressState(),
+    loadSummaryFromStorage()
+  ]);
+
+  // 如果有缓存总结，优先显示（用户可能希望看到之前的总结）
+  if (savedSummary) {
+    displaySummary(savedSummary);
+    // 如果同时有进度，也清除它（总结已完成）
+    if (progress && progress.status === 'extracting') {
+      await clearProgressState();
+    }
     return;
   }
 
-  // 没有进度，显示已保存的总结
-  const savedSummary = await loadSummaryFromStorage();
-  if (savedSummary) {
-    displaySummary(savedSummary);
+  // 没有缓存总结，检查是否有未完成的进度
+  if (progress && progress.status) {
+    restoreProgressState(progress);
   }
 }
 
@@ -339,8 +353,13 @@ async function showHistory() {
 
   historyList.innerHTML = summaries.slice(0, 20).map(item => {
     const date = new Date(item.timestamp);
-    const url = new URL(item.url);
-    const title = item.title || url.hostname;
+    let hostname = '';
+    try {
+      hostname = new URL(item.url || 'https://example.com').hostname;
+    } catch (e) {
+      hostname = '未知来源';
+    }
+    const title = item.title || hostname;
     const lang = LANGUAGE_NAMES[item.detectedLanguage] || '原文';
 
     return `
@@ -620,13 +639,16 @@ async function switchToChinese() {
     }
 
     // 保存中文翻译到storage
+    const originalData = bilingualSummary.original || {};
     await saveSummaryToStorage({
-      url: '',
-      title: '',
-      original: bilingualSummary.original.content,
+      url: (originalData.url) || '',
+      title: (originalData.title) || '',
+      original: originalData.content,
       chinese: bilingualSummary.chinese,
       detectedLanguage: bilingualSummary.detectedLanguage
     });
+
+    statusText.textContent = '翻译完成';
   } catch (err) {
     await clearProgressState();
     console.error(err);
