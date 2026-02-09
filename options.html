@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI 网页总结 - 设置</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+    .form-group { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 5px; font-weight: 600; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; }
+    button { background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    .help-text { color: #666; font-size: 14px; margin-top: 5px; }
+    .saved { color: green; margin-left: 10px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>⚙️ 设置</h1>
+  
+  <div class="form-group">
+    <label>AI 提供商</label>
+    <select id="provider">
+      <option value="zhipu">智谱 AI（推荐，国内稳定）</option>
+      <option value="openai">OpenAI（需代理）</option>
+      <option value="deepseek">DeepSeek（代码强）</option>
+    </select>
+  </div>
+  
+  <div class="form-group">
+    <label>API Key</label>
+    <input type="password" id="apiKey" placeholder="sk-...">
+    <p class="help-text">
+      <span id="keyHelp">获取地址：https://open.bigmodel.cn/</span>
+    </p>
+  </div>
+  
+  <button id="saveBtn">保存设置</button>
+  <span id="savedMsg" class="saved hidden">✅ 已保存</span>
+  
+  <script src="options.js"></script>
+</body>
+</html>
